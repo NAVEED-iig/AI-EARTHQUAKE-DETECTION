@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Earthquake AI Detector</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  :root { --bg:#f5f6f8; --card:#fff; --text:#1c2230; --muted:#667085; --line:#e4e7ec;
+          --accent:#d64545; --green:#2e9e5b; --blue:#2f6fed; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; background:var(--bg); color:var(--text); }
+  header { background:#1c2230; color:#fff; padding:20px 28px; }
+  header h1 { margin:0; font-size:22px; }
+  header p { margin:4px 0 0; color:#aab2c5; font-size:14px; }
+  main { max-width:1100px; margin:24px auto; padding:0 20px 40px; display:grid; gap:18px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:18px 20px; }
+  .card h2 { margin:0 0 12px; font-size:16px; }
+  .controls { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+  @media (max-width:760px){ .controls{grid-template-columns:1fr;} }
+  .field { margin-bottom:12px; }
+  label { display:block; font-size:13px; color:var(--muted); margin-bottom:5px; }
+  input[type=range] { width:100%; }
+  input[type=number], input[type=file] { width:100%; padding:8px; border:1px solid var(--line); border-radius:8px; font-size:14px; background:#fff; }
+  button { background:var(--blue); color:#fff; border:0; padding:10px 16px; border-radius:8px; font-size:14px; cursor:pointer; font-weight:600; }
+  button:disabled { opacity:.5; cursor:wait; }
+  button.secondary { background:#eef1f6; color:var(--text); }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .stats { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; }
+  @media (max-width:760px){ .stats{grid-template-columns:repeat(2,1fr);} }
+  .stat { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px 16px; }
+  .stat .v { font-size:26px; font-weight:700; }
+  .stat .l { font-size:12px; color:var(--muted); margin-top:2px; }
+  .chartbox { position:relative; height:260px; }
+  .legend { display:flex; gap:16px; font-size:12px; color:var(--muted); margin-top:8px; flex-wrap:wrap; }
+  .sw { display:inline-block; width:12px; height:12px; border-radius:3px; vertical-align:-2px; margin-right:5px; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); }
+  th { color:var(--muted); font-weight:600; font-size:12px; text-transform:uppercase; letter-spacing:.03em; }
+  #status { font-size:14px; color:var(--muted); min-height:20px; }
+  #status.err { color:var(--accent); }
+  .badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; font-weight:600; }
+  .ok { background:#e6f6ec; color:var(--green); } .bad { background:#fdeaea; color:var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Earthquake AI Detector</h1>
+  <p>1D CNN seismic event detection &middot; <span id="health" class="badge bad">checking backend&hellip;</span></p>
+</header>
+
+<main>
+  <section class="card">
+    <h2>Run detection</h2>
+    <div class="field">
+      <label>Detection threshold: <b id="thVal">0.90</b> (lower = more sensitive)</label>
+      <input type="range" id="threshold" min="0.1" max="0.99" step="0.01" value="0.9">
+    </div>
+    <div class="controls">
+      <div>
+        <h2 style="font-size:14px">Option 1 &mdash; Simulated stream</h2>
+        <div class="field">
+          <label>Number of hidden earthquakes (0&ndash;5)</label>
+          <input type="number" id="nEvents" min="0" max="5" value="3">
+        </div>
+        <button id="simBtn">Simulate &amp; detect</button>
+      </div>
+      <div>
+        <h2 style="font-size:14px">Option 2 &mdash; Upload waveform</h2>
+        <div class="field">
+          <label>CSV/TXT file (one amplitude value per line, or time,amplitude)</label>
+          <input type="file" id="file" accept=".csv,.txt">
+        </div>
+        <div class="field">
+          <label>Sampling rate of your file (Hz)</label>
+          <input type="number" id="fs" value="100" min="1">
+        </div>
+        <div class="row">
+          <button id="upBtn">Upload &amp; detect</button>
+          <a href="/api/sample" download><button class="secondary" type="button">Get sample CSV</button></a>
+        </div>
+      </div>
+    </div>
+    <p id="status"></p>
+  </section>
+
+  <section class="stats">
+    <div class="stat"><div class="v" id="sEvents">&ndash;</div><div class="l">Events detected</div></div>
+    <div class="stat"><div class="v" id="sTrue">&ndash;</div><div class="l">True events (simulation)</div></div>
+    <div class="stat"><div class="v" id="sPeak">&ndash;</div><div class="l">Highest probability</div></div>
+    <div class="stat"><div class="v" id="sDur">&ndash;</div><div class="l">Duration analysed</div></div>
+  </section>
+
+  <section class="card">
+    <h2>Seismogram</h2>
+    <div class="chartbox"><canvas id="waveChart"></canvas></div>
+    <div class="legend">
+      <span><span class="sw" style="background:rgba(220,60,60,.35)"></span>Detected event</span>
+      <span><span class="sw" style="background:#2e9e5b"></span>True onset (simulation only)</span>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Model earthquake probability</h2>
+    <div class="chartbox"><canvas id="probChart"></canvas></div>
+  </section>
+
+  <section class="card">
+    <h2>Detected events</h2>
+    <table>
+      <thead><tr><th>#</th><th>Start (s)</th><th>End (s)</th><th>Peak probability</th></tr></thead>
+      <tbody id="eventRows"><tr><td colspan="4" style="color:#667085">Run a detection to see results.</td></tr></tbody>
+    </table>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+let waveChart, probChart;
+let overlay = { events: [], trueOnsets: [] };
+
+// Draws red bands for detected events and green dashed lines for true onsets
+Chart.register({
+  id: 'overlay',
+  beforeDatasetsDraw(chart) {
+    if (chart.canvas.id !== 'waveChart') return;
+    const { ctx, chartArea: a, scales: { x } } = chart;
+    ctx.save();
+    ctx.fillStyle = 'rgba(220,60,60,0.22)';
+    overlay.events.forEach(e => {
+      const x0 = x.getPixelForValue(e.start), x1 = x.getPixelForValue(e.end);
+      ctx.fillRect(x0, a.top, Math.max(x1 - x0, 3), a.bottom - a.top);
+    });
+    ctx.strokeStyle = '#2e9e5b'; ctx.lineWidth = 1.6; ctx.setLineDash([6, 4]);
+    overlay.trueOnsets.forEach(t => {
+      const px = x.getPixelForValue(t);
+      ctx.beginPath(); ctx.moveTo(px, a.top); ctx.lineTo(px, a.bottom); ctx.stroke();
+    });
+    ctx.restore();
+  }
+});
+
+function makeChart(id, datasets, yTitle, yMin, yMax) {
+  return new Chart($(id), {
+    type: 'line',
+    data: { datasets },
+    options: {
+      parsing: false, animation: false, responsive: true, maintainAspectRatio: false,
+      elements: { point: { radius: 0 } },
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { type: 'linear', title: { display: true, text: 'Time (s)' } },
+        y: { title: { display: true, text: yTitle }, min: yMin, max: yMax }
+      }
+    }
+  });
+}
+
+waveChart = makeChart('waveChart',
+  [{ data: [], borderColor: '#2f6fed', borderWidth: 0.8 }], 'Amplitude');
+probChart = makeChart('probChart',
+  [{ data: [], borderColor: '#d64545', borderWidth: 1.8 },
+   { data: [], borderColor: '#111', borderWidth: 1, borderDash: [4, 4] }], 'Probability', 0, 1);
+
+function setStatus(msg, err = false) { $('status').textContent = msg; $('status').className = err ? 'err' : ''; }
+function busy(b) { $('simBtn').disabled = b; $('upBtn').disabled = b; }
+
+function render(d) {
+  overlay = { events: d.events, trueOnsets: d.true_onsets || [] };
+  waveChart.data.datasets[0].data = d.t.map((t, i) => ({ x: t, y: d.y[i] }));
+  waveChart.options.scales.x.max = d.duration;
+  probChart.data.datasets[0].data = d.prob_t.map((t, i) => ({ x: t, y: d.probs[i] }));
+  probChart.data.datasets[1].data = [{ x: 0, y: d.threshold }, { x: d.duration, y: d.threshold }];
+  probChart.options.scales.x.max = d.duration;
+  waveChart.update(); probChart.update();
+
+  $('sEvents').textContent = d.events.length;
+  $('sTrue').textContent = d.true_onsets && d.true_onsets.length ? d.true_onsets.length : '–';
+  $('sPeak').textContent = d.probs.length ? Math.max(...d.probs).toFixed(3) : '–';
+  $('sDur').textContent = d.duration.toFixed(0) + ' s';
+
+  $('eventRows').innerHTML = d.events.length
+    ? d.events.map((e, i) => `<tr><td>${i + 1}</td><td>${e.start.toFixed(1)}</td><td>${e.end.toFixed(1)}</td><td>${e.peak.toFixed(3)}</td></tr>`).join('')
+    : '<tr><td colspan="4" style="color:#667085">No earthquakes detected at this threshold.</td></tr>';
+}
+
+async function call(url, options) {
+  busy(true); setStatus('Running model…');
+  try {
+    const res = await fetch(url, options);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Request failed');
+    render(data); setStatus('Done.');
+  } catch (e) {
+    setStatus('Error: ' + e.message, true);
+  } finally { busy(false); }
+}
+
+$('threshold').oninput = e => $('thVal').textContent = (+e.target.value).toFixed(2);
+
+$('simBtn').onclick = () => call('/api/simulate', {
+  method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ n_events: +$('nEvents').value, threshold: +$('threshold').value })
+});
+
+$('upBtn').onclick = () => {
+  const f = $('file').files[0];
+  if (!f) return setStatus('Choose a file first.', true);
+  const fd = new FormData();
+  fd.append('file', f); fd.append('fs', $('fs').value); fd.append('threshold', $('threshold').value);
+  call('/api/upload', { method: 'POST', body: fd });
+};
+
+fetch('/api/health').then(r => r.json()).then(h => {
+  $('health').textContent = h.model_loaded ? 'model loaded' : 'model missing';
+  $('health').className = 'badge ' + (h.model_loaded ? 'ok' : 'bad');
+}).catch(() => { $('health').textContent = 'backend offline'; });
+</script>
+</body>
+</html>
